@@ -1,182 +1,100 @@
-// Crée un nouveau bloc de message à partir du modèle HTML caché.
-function createMessageElement() {
-    // Récupère le conteneur qui affiche les messages de la conversation.
-    const output = document.querySelector("#gpt-output");
+(() => {
+  const STORAGE_KEY = "maintidoc.conversationId";
+  const newId = () => crypto.randomUUID();
+  let conversationId = localStorage.getItem(STORAGE_KEY) || newId();
+  localStorage.setItem(STORAGE_KEY, conversationId);
+  const output = document.querySelector("#gpt-output");
+  const form = document.querySelector("#prompt-form");
+  const sendButton = form.querySelector('button[type="submit"]');
+  const notice = document.querySelector("#notice");
+  const specialty = document.querySelector("#specialty");
+  const converter = new showdown.Converter();
 
-    // Récupère le bloc HTML utilisé comme modèle.
-    const template = document.querySelector("#chat-template");
-
-    // Copie le modèle avec tous ses éléments enfants.
-    const clone = template.cloneNode(true);
-
-    // Retire l’identifiant du clone pour éviter les identifiants en double.
-    clone.id = "";
-
-    // Ajoute le nouveau bloc à la fin de la conversation.
-    output.appendChild(clone);
-
-    // Retire la classe Tailwind "hidden" pour rendre le bloc visible.
-    clone.classList.remove("hidden");
-
-    // Retourne l’élément qui recevra le texte du message.
-    return clone.querySelector(".message");
-}
-
-// Ajoute un message à la conversation et retourne son élément HTML.
-function appendMessage(message) {
-    // Crée un bloc visible et récupère son élément ".message".
-    const infoBlock = createMessageElement();
-
-    //si _cloneAnswerBlock() retourne null
-    // Vérifie que l’élément destiné au message existe.
-    if (!infoBlock) {
-        // Affiche une erreur dans la console du navigateur.
-        console.error("Failed to create the information block");
-
-        // Arrête la fonction en indiquant qu’aucun élément n’est disponible.
-        return null;
-    }
-
-    // Insère le message comme du texte, sans l’interpréter comme du HTML.
-    infoBlock.innerText = message;
-
-    // Retourne l’élément pour pouvoir modifier son contenu ensuite.
-    return infoBlock;
-}
-
-// Récupère les messages affichés dans la conversation.
-function getChatHistory() {
-    // Sélectionne les éléments ".message", sauf celui du modèle caché .
-    const infoBlocks = document.querySelectorAll(
-        ".message:not(#chat-template .message)"
-    );
-
-    // Vérifie si aucun message n’a été trouvé.
-    if (!infoBlocks.length) {
-        // Affiche un avertissement dans la console du navigateur.
-        console.warn("Aucun bloc d'information trouvé");
-
-        // Retourne un tableau vide si la conversation ne contient aucun message.
-        return [];
-    }
-
-    // Convertit la liste d’éléments en tableau, puis récupère le HTML de chacun.
-    // Attention : innerHTML récupère aussi les balises HTML. Pour récupérer uniquement le texte, utilise block.textContent.
-    return Array.from(infoBlocks).map(block => block.innerText);
-}
-
-// Envoie la conversation à Flask et retourne un lecteur de la réponse progressive.
-async function fetchPromptResponse(prompt) {
-    // Envoie une requête à la route Flask "/prompt" et attend sa réponse initiale.
-    const response = await fetch("/prompt", {
-        // Utilise POST pour transmettre les données au serveur.
-        method: "POST",
-
-        // Indique que le corps de la requête contient du JSON.
-        headers: {
-            "Content-Type": "application/json",
-        },
-
-        // Récupère l’historique et le convertit en texte JSON.
-        body: JSON.stringify({ messages: getChatHistory() }),
-    });
-
-    // Retourne un lecteur permettant de lire la réponse fragment par fragment.
-    return response.body.getReader();
-}
-
-// Lit la réponse progressive et affiche le texte converti en HTML.
-async function readResponseChunks(reader, gptOutput) {
-    // Décode les octets reçus en texte UTF-8.
-    const decoder = new TextDecoder("utf-8");
-
-    // Crée le convertisseur Markdown vers HTML.
-    const converter = new showdown.Converter();
-
-    // Conserve le texte complet reçu jusqu’à présent.
-    let text = "";
-
+  function showNotice(message, error = false) {
+    notice.textContent = message;
+    notice.classList.remove("hidden", "border-amber-300", "bg-amber-50", "border-red-300", "bg-red-50");
+    notice.classList.add(error ? "border-red-300" : "border-amber-300", error ? "bg-red-50" : "bg-amber-50");
+  }
+  function clearNotice() { notice.textContent = ""; notice.classList.add("hidden"); }
+  function appendMessage(role, text) {
+    const block = document.querySelector("#chat-template").cloneNode(true);
+    block.removeAttribute("id"); block.classList.remove("hidden");
+    block.dataset.role = role;
+    const body = block.querySelector(".message");
+    body.innerHTML = role === "assistant" ? DOMPurify.sanitize(converter.makeHtml(text)) : "";
+    if (role === "user") body.textContent = text;
+    block.insertAdjacentHTML("afterbegin", `<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">${role === "user" ? "Vous" : "MaintiDoc"}</div>`);
+    output.appendChild(block); block.scrollIntoView({ behavior: "smooth", block: "end" });
+    return body;
+  }
+  function currentMessages() {
+    return Array.from(output.querySelectorAll("[data-role]")).map(el => ({ role: el.dataset.role, content: el.querySelector(".message").innerText }));
+  }
+  function displayMessages(messages) {
+    output.replaceChildren();
+    messages.forEach(m => appendMessage(m.role, m.content));
+  }
+  async function loadHistory() {
     try {
-        while (true) {
-            // Attend le prochain fragment.
-            // done indique la fin du flux ; value contient les octets reçus.
-            const { done, value } = await reader.read();
-
-            // Quitte la boucle lorsque le flux est terminé.
-            if (done) break;
-
-            // Décode le fragment en conservant les caractères incomplets
-            // pour les compléter lors de la réception suivante.
-            text += decoder.decode(value, { stream: true });
-
-            // Convertit le Markdown en HTML et sécurise le résultat.
-            gptOutput.innerHTML = DOMPurify.sanitize(
-                converter.makeHtml(text)
-            );
-        }
-
-        // Termine le décodage des éventuels octets restants.
-        text += decoder.decode();
-
-        // Affiche le résultat final.
-        gptOutput.innerHTML = DOMPurify.sanitize(
-            converter.makeHtml(text)
-        );
-    } finally {
-        // Libère le lecteur, même si une erreur survient.
-        reader.releaseLock();
+      const r = await fetch(`/api/conversations/${conversationId}`);
+      if (!r.ok) throw new Error("Chargement impossible.");
+      const data = await r.json(); displayMessages(data.messages || []); specialty.value = data.specialty || "maintenance";
+    } catch (e) { showNotice("Impossible de charger l’historique enregistré.", true); }
+  }
+  async function sendPrompt(text) {
+    appendMessage("user", text);
+    const assistant = appendMessage("assistant", "");
+    const response = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: conversationId, specialty: specialty.value, messages: currentMessages().filter(m => m.content.trim()) }) });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})); throw new Error(data.error || `Erreur serveur (${response.status}).`);
     }
-}
-
-// Attend que le HTML soit chargé avant d’exécuter ce code.
-document.addEventListener("DOMContentLoaded", () => {
-    // Récupère le formulaire grâce à son identifiant.
-    const form = document.querySelector("#prompt-form");
-
-    // Récupère le bouton situé dans le formulaire.
-    const button = form.querySelector("button");
-
-    // Exécute cette fonction lors de l’envoi du formulaire.
-    // async permet d’utiliser await pour attendre les opérations asynchrones.
-    form.addEventListener("submit", async (event) => {
-        // Empêche l’envoi classique du formulaire et le rechargement de la page.
-        event.preventDefault();
-
-        // Lit la question et retire les espaces au début et à la fin.
-        const prompt = form.elements.prompt.value.trim();
-
-        // Arrête si la question est vide ou si une réponse est déjà en cours.
-        if (!prompt || button.disabled) return;
-
-        // Affiche la question de l’utilisateur dans la conversation.
-        appendMessage(prompt);
-
-        // Remet les champs du formulaire à leurs valeurs initiales.
-        form.reset();
-
-        // Désactive le bouton pour éviter plusieurs envois simultanés.
-        button.disabled = true;
-
-        try {
-            // Envoie la conversation à Flask et récupère le lecteur du flux.
-            // Cet appel précède la création du bloc vide pour l’exclure de l’historique.
-            const reader = await fetchPromptResponse(prompt);
-
-            // Crée un bloc vide destiné à recevoir la réponse de l’IA.
-            const output = appendMessage("");
-
-            // Lit et affiche progressivement les fragments de la réponse.
-            await readResponseChunks(reader, output);
-        } catch (error) {
-            // Affiche un message d’erreur dans la conversation.
-            //Error: unable to retrieve the response.
-            appendMessage("Erreur : impossible de récupérer la réponse.");
-
-            // Affiche les détails de l’erreur dans la console du navigateur.
-            console.error(error);
-        } finally {
-            // Réactive le bouton après la réussite ou l’échec du traitement.
-            button.disabled = false;
-        }
-    });
-});
+    if (!response.body) throw new Error("Le serveur n’a pas retourné de réponse.");
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let textSoFar = "";
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      textSoFar += decoder.decode(value, { stream: true });
+      if (textSoFar.includes("[ERREUR]")) throw new Error(textSoFar.replace(/\[ERREUR\]/g, "").trim());
+      assistant.innerHTML = DOMPurify.sanitize(converter.makeHtml(textSoFar));
+    }
+    textSoFar += decoder.decode(); assistant.innerHTML = DOMPurify.sanitize(converter.makeHtml(textSoFar));
+  }
+  form.addEventListener("submit", async event => {
+    event.preventDefault(); clearNotice();
+    const text = form.elements.prompt.value.trim(); if (!text || sendButton.disabled) return;
+    form.reset(); sendButton.disabled = true;
+    try { await sendPrompt(text); } catch (e) { showNotice(e.message || "Impossible d’obtenir une réponse.", true); }
+    finally { sendButton.disabled = false; }
+  });
+  document.querySelector("#clear-button").addEventListener("click", async () => {
+    clearNotice();
+    try {
+      const r = await fetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("Suppression impossible.");
+      output.replaceChildren(); conversationId = newId(); localStorage.setItem(STORAGE_KEY, conversationId); showNotice("Conversation effacée.");
+    } catch (e) { showNotice(e.message, true); }
+  });
+  document.querySelector("#export-button").addEventListener("click", async () => {
+    clearNotice();
+    try {
+      const r = await fetch(`/api/conversations/${conversationId}/export`);
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || "Export impossible."); }
+      const blob = await r.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a");
+      a.href = url; a.download = "conversation-maintidoc.md"; a.click(); URL.revokeObjectURL(url);
+    } catch (e) { showNotice(e.message, true); }
+  });
+  document.querySelector("#summarize-button").addEventListener("click", async event => {
+    clearNotice(); const file = document.querySelector("#file-input").files[0];
+    if (!file) { showNotice("Choisissez d’abord un fichier.", true); return; }
+    const button = event.currentTarget; button.disabled = true; button.textContent = "Résumé en cours…";
+    const data = new FormData(); data.append("file", file); data.append("specialty", specialty.value); data.append("conversation_id", conversationId);
+    try {
+      const r = await fetch("/api/summarize", { method: "POST", body: data }); const result = await r.json();
+      if (!r.ok) throw new Error(result.error || "Résumé impossible.");
+      appendMessage("user", `Résumé du fichier « ${file.name} » demandé.`); appendMessage("assistant", result.summary);
+      document.querySelector("#file-input").value = "";
+    } catch (e) { showNotice(e.message || "Échec du traitement du fichier.", true); }
+    finally { button.disabled = false; button.textContent = "Insérer / résumer"; }
+  });
+  specialty.addEventListener("change", () => { clearNotice(); showNotice("La spécialité sera appliquée aux prochains messages."); });
+  loadHistory();
+})();
